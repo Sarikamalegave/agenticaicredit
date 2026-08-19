@@ -1,0 +1,31 @@
+{
+  "1745690": {
+    "emp_id": "2000160501",
+    "agent_name": "Priyanka Radhakrishnan",
+    "tl_name": "Anil Singh Rawat",
+    "qa_name": "3000000001",
+    "manager_name": "Mala Bhaskar Pulickel"
+  },
+  "1746066": {
+    "emp_id": "2000160502",
+    "agent_name": "Sarika Malegave",
+    "tl_name": "Umesh Kale",
+    "qa_name": "2000120537",
+    "manager_name": "Guttula Venkateshwarrao"
+  },
+  "1746045": {
+    "emp_id": "1000441863",
+    "agent_name": "Danish Alam Shakil Ansari",
+    "tl_name": "Umesh Kale",
+    "qa_name": "2000120537",
+    "manager_name": "Guttula Venkateshwarrao"
+  },
+  "1746049": {
+    "emp_id": "2000106907",
+    "agent_name": "Ayushi Patni",
+    "tl_name": "Shekhar Landage",
+    "qa_name": "2000120537",
+    "manager_name": "Guttula Venkateshwarrao"
+   
+  }
+}

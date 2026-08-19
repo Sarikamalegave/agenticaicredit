@@ -1,0 +1,70 @@
+{
+  "audit_id": "1746066",
+  "route_taken": "ESCALATION",
+  "report_type": "escalation",
+  "decision": {
+    "route": "ESCALATION",
+    "confidence": 1.0,
+    "reasoning": "The audit shows 2 fatal failures in INFORMATION AND CONFIDENTIALITY, specifically in verification procedures and confidentiality requirements. Per policy, ANY fatal failure immediately triggers escalation regardless of the otherwise strong 88.9% pass rate, as these represent critical compliance and regulatory breaches that cannot be handled through coaching.",
+    "key_signals": [
+      "has_fatal_failure: true",
+      "2 fatal confidentiality/verification breaches",
+      "INFORMATION AND CONFIDENTIALITY parameter violated"
+    ]
+  },
+  "audit_summary": {
+    "audit_id": "1746066",
+    "agent_name": "Sarika Jagadevarao Malegave",
+    "process_name": "Salt Lake",
+    "tenure": "&gt;365 Days",
+    "target": "95%",
+    "total_subparameters": 18,
+    "failed_count": 2,
+    "pass_rate": 88.9,
+    "quality_scored": 0.0,
+    "points_ratio": 88.9,
+    "effective_score": 88.9,
+    "has_fatal_failure": true,
+    "fatal_failure_count": 2,
+    "error_types": [
+      "FATAL"
+    ],
+    "failed_parameters": [
+      {
+        "parameter": "INFORMATION AND CONFIDENTIALITY",
+        "subparameter": "COMPLIANT TO VERIFICATION PROCEDURES",
+        "error_type": "FATAL"
+      },
+      {
+        "parameter": "INFORMATION AND CONFIDENTIALITY",
+        "subparameter": "COMPLIANT WITH CONFIDENTIALITY REQUIREMENTS",
+        "error_type": "FATAL"
+      }
+    ]
+  },
+  "agent_output": {
+    "type": "ESCALATION",
+    "severity": "CRITICAL",
+    "agent_name": "Sarika Jagadevarao Malegave",
+    "escalation_reason": "Agent with over 365 days tenure committed two FATAL confidentiality breaches by sharing case information without proper verification and with an unauthorized third party, creating immediate regulatory and customer harm exposure",
+    "fatal_breaches": [
+      "INFORMATION AND CONFIDENTIALITY - COMPLIANT TO VERIFICATION PROCEDURES - ID verification not per policy, failed to verify demographics, shared case details without verification",
+      "INFORMATION AND CONFIDENTIALITY - COMPLIANT WITH CONFIDENTIALITY REQUIREMENTS - Confidentiality requirements not met for personal and account information, shared case information with an unauthorized third party"
+    ],
+    "risk_impact": [
+      "Regulatory compliance violation exposing organization to CFPB enforcement action and potential fines for unauthorized disclosure of consumer credit information",
+      "Customer PII compromise creating identity theft and fraud exposure",
+      "Legal liability from unauthorized third-party disclosure of protected account information",
+      "Breach of contractual and statutory confidentiality obligations under consumer credit protection laws"
+    ],
+    "assigned_to": "Compliance Team",
+    "recommended_actions": [
+      "Immediate removal of agent from production queue pending investigation",
+      "Compliance team to conduct full incident investigation and determine scope of unauthorized disclosures",
+      "Review all recent calls by this agent for additional verification or confidentiality failures",
+      "Assess customer notification requirements and potential harm mitigation steps",
+      "Mandatory re-certification on verification protocols and confidentiality requirements before return to production",
+      "Document incident for regulatory reporting assessment"
+    ]
+  }
+}

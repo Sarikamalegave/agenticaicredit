@@ -1,0 +1,69 @@
+{
+  "priyanka": {
+    "password": "agent123",
+    "role": "AGENT",
+    "emp_id": "2000160501",
+    "display_name": "Priyanka Radhakrishnan",
+    "reports_to_tl": "Anil Singh Rawat",
+    "reports_to_manager": "Mala Bhaskar Pulickel"
+  },
+  "danish": {
+    "password": "agent123",
+    "role": "AGENT",
+    "emp_id": "1000441863",
+    "display_name": "Danish Alam Shakil Ansari",
+    "reports_to_tl": "Umesh Kale",
+    "reports_to_manager": "Guttula Venkateshwarrao"
+  },
+  "sarika": {
+    "password": "agent123",
+    "role": "AGENT",
+    "emp_id": "2000120537",
+    "display_name": "Sarika Malegave",
+    "reports_to_tl": "Umesh Kale",
+    "reports_to_manager": "Guttula Venkateshwarrao"
+  },
+  "venkat": {
+    "password": "mgr123",
+    "role": "MANAGER",
+    "emp_id": "1000419029",
+    "display_name": "Guttula Venkateshwarrao",
+     "manages_tls": ["Umesh Kale", "Shekhar Landage"]
+  },
+  "umesh": {
+    "password": "tl123",
+    "role": "TL",
+    "emp_id": "1000435326",
+    "display_name": "Umesh Kale",
+    "reports_to_tl": "Guttula Venkateshwarrao",
+    "reports_to_manager": "Vikas Gupta"
+  },
+  "anil": {
+    "password": "tl123",
+    "role": "TL",
+    "emp_id": "4000000001",
+    "display_name": "Anil Singh Rawat",
+    "reports_to_manager": "Mala Bhaskar Pulickel"
+  },
+  "shekhar": {
+    "password": "tl123",
+    "role": "TL",
+    "emp_id": "1000415095",
+    "reports_to_tl": "Guttula Venkateshwarrao",
+    "reports_to_manager": "Vikas Gupta"
+  },
+  "ayushi": {
+    "password": "agent123",
+    "role": "AGENT",
+    "emp_id": "2000106907",
+    "reports_to_tl": "Shekhar Landage",
+    "reports_to_manager": "Guttula Venkateshwarrao"
+  },
+  "mala": {
+    "password": "mgr123",
+    "role": "MANAGER",
+    "emp_id": "5000000001",
+    "display_name": "Mala Bhaskar Pulickel",
+    "manages_tls": ["Anil Singh Rawat", "Ravi Kumar"]
+  }
+}
