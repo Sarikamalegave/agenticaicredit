@@ -1,15 +1,6 @@
 """
 Exact-match category retrieval over Chroma, with semantic fallback.
-
-Since audit parameters match SOP subcategories word-for-word (same taxonomy),
-we use exact metadata filtering first, then fall back to pure semantic search.
-
-Public API:
-  retrieve_context(query_text, parameter, subparameter, k=5) -> str
-      Returns a single SOP context STRING (LLM-ready).
-
-  retrieve_documents(query_text, query_category, k=5) -> list[Document]
-      Returns raw ranked Documents (debugging / advanced use).
+Emits an OTel 'rag_embedding' span so Titan embedding cost is tracked.
 """
 
 import threading
@@ -19,15 +10,29 @@ import chromadb
 from langchain_chroma import Chroma
 from langchain_core.documents import Document
 
+from opentelemetry import trace
+
 from client import embeddings
 from rag.metadata import normalize_metadata_value
 
-print(">>> LOADED NEW retrieve.py (exact-match + semantic fallback) <<<")
+print(">>> LOADED NEW retrieve.py (exact-match + semantic fallback + embed tracing) <<<")
 
 VECTOR_DB_DIR = Path(__file__).resolve().parent.parent / "vectordb"
 COLLECTION_NAME = "agent_guidelines"
 
 MAX_CONTEXT_CHARS = 3500
+
+# Model id used for embeddings — matches observability.PRICES entries.
+EMBED_MODEL_ID = "amazon.titan-embed-text-v2"
+
+_tracer = trace.get_tracer(__name__)
+
+
+def _estimate_tokens(text: str) -> int:
+    """Rough token estimate (~4 chars/token). Replace with exact count if available."""
+    if not text:
+        return 0
+    return max(1, len(text) // 4)
 
 
 # ---------------------------------------------------------
@@ -59,32 +64,46 @@ def _tag(docs, layer: str):
 
 
 # ---------------------------------------------------------
-# Core: return ranked Documents
+# Core: return ranked Documents (embedding span only when Titan runs)
 # ---------------------------------------------------------
 def retrieve_documents(query_text: str, query_category: str,
                        k: int = 5, verbose: bool = False) -> list[Document]:
     """
     Exact category+subcategory match first (via normalized category_combined),
     then semantic fallback if no exact match.
+
+    NOTE: both stages currently call db.similarity_search, which embeds the
+    query with Titan. We wrap in a 'rag_embedding' span so cost is tracked.
     """
-    db = get_db()
-    q_norm = normalize_metadata_value(query_category)
+    with _tracer.start_as_current_span("rag_embedding") as span:
+        est_tokens = _estimate_tokens(query_text)
 
-    # ---- Stage 0: exact native filter on category_combined ----
-    if q_norm:
-        exact = db.similarity_search(
-            query_text, k=k, filter={"category_combined": q_norm}
-        )
-        if exact:
-            if verbose:
-                print(f"[EXACT] matched category_combined = '{q_norm}'")
-            return _tag(exact, "exact")
+        # attribute keys match observability._IN_KEYS / _MODEL_KEYS
+        span.set_attribute("gen_ai.request.model", EMBED_MODEL_ID)
+        span.set_attribute("gen_ai.usage.input_tokens", est_tokens)
+        span.set_attribute("gen_ai.usage.output_tokens", 0)  # embeddings: no output
+        span.set_attribute("rag.query_category", query_category or "")
 
-    # ---- Stage 1: semantic fallback (no exact match) ----
-    if verbose:
-        print(f"[FALLBACK] no exact match for '{q_norm}' -> semantic search")
-    semantic = db.similarity_search(query_text, k=k)
-    return _tag(semantic, "semantic")
+        db = get_db()
+        q_norm = normalize_metadata_value(query_category)
+
+        # ---- Stage 0: exact native filter on category_combined ----
+        if q_norm:
+            exact = db.similarity_search(
+                query_text, k=k, filter={"category_combined": q_norm}
+            )
+            if exact:
+                if verbose:
+                    print(f"[EXACT] matched category_combined = '{q_norm}'")
+                span.set_attribute("rag.match_layer", "exact")
+                return _tag(exact, "exact")
+
+        # ---- Stage 1: semantic fallback (no exact match) ----
+        if verbose:
+            print(f"[FALLBACK] no exact match for '{q_norm}' -> semantic search")
+        span.set_attribute("rag.match_layer", "semantic")
+        semantic = db.similarity_search(query_text, k=k)
+        return _tag(semantic, "semantic")
 
 
 # ---------------------------------------------------------

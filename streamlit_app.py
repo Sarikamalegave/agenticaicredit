@@ -1,4 +1,5 @@
 # streamlit_ui.py
+import csv
 import io
 from pathlib import Path
 
@@ -103,10 +104,48 @@ def call_evaluate(token, agent_emp_id, audit_id, process_id, evaluation_date):
     )
 
 
+def _resolve_report_type(result) -> str | None:
+    """
+    Reliably determine the report type:
+      1. Trust the API's report_type (most reliable)
+      2. Match the docx_file the workflow returned
+      3. LAST resort: newest file on disk (avoids stale files)
+    """
+    report_type = None
+
+    # 1. Trust API report_type
+    if isinstance(result, dict):
+        report_type = result.get("report_type")
+
+    # 2. Match docx_file returned by the workflow
+    if not report_type and isinstance(result, dict):
+        docx = result.get("docx_file", "")
+        for rtype, fname in REPORT_FILES.items():
+            if fname == docx:
+                report_type = rtype
+                break
+
+    # 3. Newest file on disk (NOT first-in-dict — avoids stale escalation/feedback mixups)
+    if not report_type:
+        existing = [
+            (rtype, OUTPUT_DIR / fname)
+            for rtype, fname in REPORT_FILES.items()
+            if (OUTPUT_DIR / fname).exists()
+        ]
+        if existing:
+            report_type = max(existing, key=lambda x: x[1].stat().st_mtime)[0]
+
+    return report_type
+
+
 if submitted:
     if not agent_emp_id.strip() and not audit_id.strip():
         st.error("Please enter an Agent Emp ID or Audit ID.")
     else:
+        # clear previous run state so stale reports don't linger in the UI
+        st.session_state.pop("report_type", None)
+        st.session_state.pop("observability", None)
+
         with st.spinner("Running QA workflow (RBAC-checked)... please wait."):
             try:
                 resp = call_evaluate(
@@ -124,13 +163,7 @@ if submitted:
             response = data.get("response")
             result = response[0] if isinstance(response, list) and response else response
 
-            report_type = None
-            if isinstance(result, dict):
-                report_type = result.get("report_type")
-            if not report_type:
-                for rtype, fname in REPORT_FILES.items():
-                    if (OUTPUT_DIR / fname).exists():
-                        report_type = rtype
+            report_type = _resolve_report_type(result)
 
             if report_type:
                 st.success(f"Done. Report type: **{report_type}**")
@@ -157,16 +190,26 @@ if submitted:
 
 
 # ================= OBSERVABILITY PANEL =================
-def _is_model_row(name: str) -> bool:
-    """Identify the raw LLM/model span so we can exclude it from agent rows."""
-    n = (name or "").lower()
-    return n.startswith("chat ") or "anthropic" in n or "claude" in n or "us." in n
+def _rows_from(bucket: dict, name_col: str, decimals: int) -> list[dict]:
+    """Build display rows from a per_* bucket."""
+    return [
+        {
+            name_col: name,
+            "Tool": d.get("tool", "-") or "-",
+            "Calls": d.get("calls", 0),
+            "Input": d.get("in", 0),
+            "Output": d.get("out", 0),
+            "Total Tokens": d.get("in", 0) + d.get("out", 0),
+            "USD": round(d.get("usd", 0), decimals),
+        }
+        for name, d in bucket.items()
+    ]
 
 
 obs = st.session_state.get("observability")
 if obs:
     st.divider()
-    st.subheader("Observability — Agents, Tokens & Cost")
+    st.subheader("Observability — Agents, RAG, Tokens & Cost")
 
     t = obs.get("total", {})
     c1, c2, c3, c4 = st.columns(4)
@@ -175,67 +218,77 @@ if obs:
     c3.metric("Output Tokens", f"{t.get('out', 0):,}")
     c4.metric("Total Cost (USD)", f"${t.get('usd', 0):.6f}")
 
-    per_agent = obs.get("per_agent", {})
-
-    # ---- Split model row out of the agent list ----
     model_name = obs.get("model")
-    agent_rows = {}
-    for name, d in per_agent.items():
-        if _is_model_row(name):
-            if not model_name:
-                model_name = name
-            continue
-        agent_rows[name] = d
-
-    if model_name:
+    if model_name and model_name != "-":
         st.markdown(f"**Model:** `{model_name}`")
 
-    # ---- Per-Agent Breakdown (agents ONLY, no model/LLM row) ----
+    per_agent = obs.get("per_agent", {})
+    per_rag = obs.get("per_rag", {})
+    per_tool = obs.get("per_tool", {})
+
+    # ---- 1. Per-Agent Breakdown (LLM agents only) ----
+    agent_rows = _rows_from(per_agent, "Agent", 6)
     if agent_rows:
         st.markdown("**Per-Agent Breakdown**")
-        rows = [
-            {
-                "Agent": name,
+        st.table(agent_rows)
+    else:
+        st.info("No billed agent spans captured. "
+                "(Check the API terminal SPAN dump for token attribute keys.)")
+
+    # ---- 2. RAG / Embedding Breakdown (Titan functions, NOT agents) ----
+    rag_rows = _rows_from(per_rag, "RAG Model", 8)   # 8 decimals: tiny embedding cost
+    if rag_rows:
+        st.markdown("**RAG / Embedding Breakdown**")
+        st.caption("Retrieval embedding calls (Amazon Titan). These are functions, not agents.")
+        st.table(rag_rows)
+
+    # ---- 3. Framework Tools (e.g. MCP) ----
+    tool_rows = _rows_from(per_tool, "Tool", 6)
+    if tool_rows:
+        st.markdown("**Framework Tools Breakdown**")
+        st.table(tool_rows)
+
+    # ---- DOWNLOAD: combined observability report (CSV) ----
+    buf = io.StringIO()
+    writer = csv.DictWriter(
+        buf, fieldnames=["Section", "Name", "Tool", "Calls", "Input", "Output", "Total Tokens", "USD"]
+    )
+    writer.writeheader()
+
+    def _write_section(section: str, bucket: dict, decimals: int):
+        for name, d in bucket.items():
+            writer.writerow({
+                "Section": section,
+                "Name": name,
                 "Tool": d.get("tool", "-") or "-",
                 "Calls": d.get("calls", 0),
                 "Input": d.get("in", 0),
                 "Output": d.get("out", 0),
                 "Total Tokens": d.get("in", 0) + d.get("out", 0),
-                "USD": round(d.get("usd", 0), 6),
-            }
-            for name, d in agent_rows.items()
-        ]
-        st.table(rows)
+                "USD": round(d.get("usd", 0), decimals),
+            })
 
-        # ---- DOWNLOAD: per-agent observability report (CSV) ----
-        import csv
-        buf = io.StringIO()
-        writer = csv.DictWriter(
-            buf, fieldnames=["Agent", "Tool", "Calls", "Input", "Output", "Total Tokens", "USD"]
-        )
-        writer.writeheader()
-        writer.writerows(rows)
-        # append totals
-        writer.writerow({
-            "Agent": "TOTAL", "Tool": "-",
-            "Calls": t.get("calls", 0),
-            "Input": t.get("in", 0),
-            "Output": t.get("out", 0),
-            "Total Tokens": t.get("in", 0) + t.get("out", 0),
-            "USD": round(t.get("usd", 0), 6),
-        })
+    _write_section("AGENT", per_agent, 6)
+    _write_section("RAG", per_rag, 8)
+    _write_section("TOOL", per_tool, 6)
 
-        audit_ref = st.session_state.get("audit_ref", "report")
-        st.download_button(
-            label="⬇️ Download Observability Report (CSV)",
-            data=buf.getvalue().encode("utf-8"),
-            file_name=f"observability_{audit_ref}.csv",
-            mime="text/csv",
-            key="download_obs",
-        )
-    else:
-        st.info("No billed agent spans captured. "
-                "(Check the API terminal SPAN dump for token attribute keys.)")
+    writer.writerow({
+        "Section": "TOTAL", "Name": "-", "Tool": "-",
+        "Calls": t.get("calls", 0),
+        "Input": t.get("in", 0),
+        "Output": t.get("out", 0),
+        "Total Tokens": t.get("in", 0) + t.get("out", 0),
+        "USD": round(t.get("usd", 0), 8),
+    })
+
+    audit_ref = st.session_state.get("audit_ref", "report")
+    st.download_button(
+        label="⬇️ Download Observability Report (CSV)",
+        data=buf.getvalue().encode("utf-8"),
+        file_name=f"observability_{audit_ref}.csv",
+        mime="text/csv",
+        key="download_obs",
+    )
 
 
 # ================= DOWNLOAD REPORT =================

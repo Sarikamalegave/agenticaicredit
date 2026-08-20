@@ -2,6 +2,13 @@
 # --- OTel/Langfuse MUST configure before any agent/workflow import ---
 from observe.observability import SPANS  # noqa: F401  (side effect: configures exporters)
 
+# Defensive: server still boots even if health() isn't defined
+try:
+    from observe.observability import health
+except ImportError:
+    def health() -> dict:
+        return {}
+
 import truststore
 truststore.inject_into_ssl()
 
@@ -26,7 +33,8 @@ app.include_router(evaluate.router, prefix="/api")
 
 @app.get("/health")
 def health_check():
-    return {"status": "server running"}
+    # Reports server status PLUS Langfuse/OTel observability state.
+    return {"status": "server running", **health()}
 
 
 if __name__ == "__main__":

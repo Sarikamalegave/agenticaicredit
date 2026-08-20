@@ -20,6 +20,9 @@ from agents.decision_helper import DecisionHelper
 from agents.runners import run_decision, run_feedback, run_escalation
 from agents.ptk_builder import build_ptk_list, build_assessment_list
 from utils.savedocs import _write_ptk_docx, _write_assessment_docx, _write_report_docx
+from opentelemetry import trace
+
+_tracer = trace.get_tracer(__name__)
 OUTPUT_DIR = Path("outputs")
 OUTPUT_DIR.mkdir(exist_ok=True)
 import json
@@ -425,26 +428,12 @@ def build_qa_workflow(logger: logging.Logger, mcp_url: str = "http://localhost:8
 # ... your existing code ...
 
 async def run_workflow(logger: logging.Logger, config_data: dict[str, Any]):
-    workflow = build_qa_workflow(logger)
-    result = await workflow.run(config_data)
-    return result.get_outputs()
-
-
-# ========================================================================
-# ADD STEP 1 HERE — new streaming runner (below run_workflow)
-# ========================================================================
-async def run_workflow_stream(logger: logging.Logger, config_data: dict[str, Any]):
     """
-    Runs the workflow and yields events as each node executes,
-    then yields the final outputs at the end.
+    Runs the workflow inside a single parent span so ALL agent/RAG spans
+    nest under one 'qa_workflow' trace in the Langfuse UI.
+    In-memory cost accounting (usage_since) is unaffected.
     """
-
     workflow = build_qa_workflow(logger)
-    async for event in workflow.run(config_data,stream=True):
-        etype = type(event).__name__
-        exec_id = getattr(event, "executor_id", None) or getattr(event, "source_id", None)
-        yield ("event", etype, exec_id, event)
-
-    # after streaming completes, emit final outputs
-    outputs = workflow.get_outputs()   # confirm this method exists via Step 2 probe
-    yield ("final", outputs)
+    with _tracer.start_as_current_span("qa_workflow"):
+        result = await workflow.run(config_data)
+        return result.get_outputs()

@@ -28,7 +28,9 @@ LF_PUBLIC = os.environ.get("LANGFUSE_PUBLIC_KEY")
 LF_SECRET = os.environ.get("LANGFUSE_SECRET_KEY")
 LF_HOST = os.environ.get("LANGFUSE_HOST", "https://cloud.langfuse.com")
 
-if LF_PUBLIC and LF_SECRET:
+LANGFUSE_ENABLED = bool(LF_PUBLIC and LF_SECRET)
+
+if LANGFUSE_ENABLED:
     from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
     _auth = base64.b64encode(f"{LF_PUBLIC}:{LF_SECRET}".encode()).decode()
     _exporters.append(
@@ -37,9 +39,14 @@ if LF_PUBLIC and LF_SECRET:
             headers={"Authorization": f"Basic {_auth}"},
         )
     )
+    print(f"[observability] Langfuse ENABLED -> {LF_HOST}/api/public/otel/v1/traces")
+else:
+    print("[observability] Langfuse DISABLED (missing LANGFUSE_PUBLIC_KEY / "
+          "LANGFUSE_SECRET_KEY) - in-memory cost only")
 
 # Register ALL exporters on ONE tracer provider
 configure_otel_providers(exporters=_exporters)
+print(f"[observability] OTel configured with {len(_exporters)} exporter(s)")
 
 
 # ===============================================================
@@ -47,12 +54,19 @@ configure_otel_providers(exporters=_exporters)
 # ===============================================================
 PRICES = {
     # model substring : (input_per_1k, output_per_1k)
-    "claude-3-5-sonnet": (0.003, 0.015),
-    "claude-3-haiku":    (0.00025, 0.00125),
-    "claude-3-sonnet":   (0.003, 0.015),
-    "nova-pro":          (0.0008, 0.0032),
-    "nova-lite":         (0.00006, 0.00024),
-    "default":           (0.003, 0.015),
+    "claude-3-5-sonnet":   (0.003, 0.015),
+    "claude-sonnet-4-5":   (0.003, 0.015),    # your actual chat model
+    "claude-3-haiku":      (0.00025, 0.00125),
+    "claude-3-sonnet":     (0.003, 0.015),
+    "nova-pro":            (0.0008, 0.0032),
+    "nova-lite":           (0.00006, 0.00024),
+
+    # --- Amazon Titan embeddings (input only, output rate = 0) ---
+    "titan-embed-text-v2": (0.00002, 0.0),     # ~$0.00002 / 1K tokens (VERIFY vs AWS)
+    "titan-embed-text-v1": (0.0001, 0.0),
+    "titan-embed":         (0.00002, 0.0),     # broad fallback match
+
+    "default":             (0.003, 0.015),
 }
 
 
@@ -111,13 +125,26 @@ def force_flush() -> None:
     cast(Any, trace.get_tracer_provider()).force_flush()
 
 
+def health() -> dict:
+    """On-demand observability status probe (used by /health route)."""
+    force_flush()
+    return {
+        "langfuse_enabled": LANGFUSE_ENABLED,
+        "langfuse_host": LF_HOST,
+        "exporter_count": len(_exporters),
+        "spans_captured": len(SPANS.get_finished_spans()),
+    }
+
+
 def usage_since(mark: int, debug: bool = False) -> dict:
     force_flush()
     new_spans = list(SPANS.get_finished_spans())[mark:]
 
     total_in = total_out = calls = 0
-    per_agent: dict[str, dict] = {}
-    model_name = None
+    per_agent: dict[str, dict] = {}   # LLM agents (Claude)
+    per_rag: dict[str, dict] = {}     # RAG embedding steps (Titan) - functions, not tools
+    per_tool: dict[str, dict] = {}    # framework tools (e.g. MCP audit)
+    model_name = None                 # chat model (for display)
 
     for span in new_spans:
         attrs = dict(span.attributes or {})
@@ -126,15 +153,22 @@ def usage_since(mark: int, debug: bool = False) -> dict:
 
         name_l = (span.name or "").lower()
 
-        # capture model name from chat spans, then SKIP them (avoid double count)
+        # capture chat model name from raw chat spans, then SKIP (avoid double count)
         if name_l.startswith("chat ") or "anthropic" in name_l or "claude" in name_l:
             m = _first(attrs, _MODEL_KEYS)
             if m and not model_name:
                 model_name = m
             continue
 
-        # count ONLY named agent spans
-        if not name_l.endswith("_agent"):
+        # ---- classify span type ----
+        is_agent = name_l.endswith("_agent")
+        is_rag = name_l.endswith("_embedding") or "titan" in name_l or "embed" in name_l
+        is_tool = (
+            not is_agent and not is_rag
+            and (_first(attrs, _TOOL_KEYS) is not None or "tool" in name_l)
+        )
+
+        if not (is_agent or is_rag or is_tool):
             continue
 
         in_tok = _int(_first(attrs, _IN_KEYS, 0))
@@ -142,26 +176,50 @@ def usage_since(mark: int, debug: bool = False) -> dict:
         if in_tok == 0 and out_tok == 0:
             continue
 
-        r_in, r_out = _rate_for(model_name or "default")
+        # price using THIS span's own model (Titan vs Claude differ)
+        span_model = _first(attrs, _MODEL_KEYS) or model_name or "default"
+        r_in, r_out = _rate_for(span_model)
         usd = (in_tok / 1000) * r_in + (out_tok / 1000) * r_out
 
         calls += 1
         total_in += in_tok
         total_out += out_tok
 
-        a = per_agent.setdefault(
-            span.name, {"tool": "-", "calls": 0, "in": 0, "out": 0, "usd": 0.0}
+        # route to the correct bucket
+        if is_agent:
+            bucket = per_agent
+            row_key = span.name
+            tool_label = "-"
+        elif is_rag:
+            bucket = per_rag
+            row_key = f"{span_model}"
+            tool_label = "RAG / Embedding"
+        else:  # is_tool
+            bucket = per_tool
+            row_key = _first(attrs, _TOOL_KEYS) or span.name
+            tool_label = "Framework Tool"
+
+        a = bucket.setdefault(
+            row_key, {"tool": tool_label, "calls": 0, "in": 0, "out": 0, "usd": 0.0}
         )
         a["calls"] += 1
         a["in"] += in_tok
         a["out"] += out_tok
         a["usd"] += usd
 
-    total_usd = sum(a["usd"] for a in per_agent.values())
+    total_usd = (
+        sum(a["usd"] for a in per_agent.values())
+        + sum(a["usd"] for a in per_rag.values())
+        + sum(a["usd"] for a in per_tool.values())
+    )
+
     return {
         "total": {"calls": calls, "in": total_in, "out": total_out, "usd": total_usd},
         "per_agent": per_agent,
+        "per_rag": per_rag,
+        "per_tool": per_tool,
         "model": model_name or "-",
         "agents": sorted(per_agent.keys()),
-        "tools": [],
+        "rag": sorted(per_rag.keys()),
+        "tools": sorted(per_tool.keys()),
     }

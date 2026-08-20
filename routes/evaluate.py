@@ -1,4 +1,6 @@
 # routes/evaluate.py
+from pathlib import Path
+
 from fastapi import APIRouter, Header, HTTPException, Form
 from fastapi.responses import JSONResponse
 
@@ -7,9 +9,11 @@ from author import authorize_agent
 from utils.logger import logger
 from workflow.qa_workflow import run_workflow
 
-from observe.observability import snapshot_mark, usage_since  # <-- IMPORT
+from observe.observability import snapshot_mark, usage_since
 
 router = APIRouter()
+
+OUTPUT_DIR = Path("outputs")
 
 
 def _require_user(authorization: str | None) -> User:
@@ -18,6 +22,16 @@ def _require_user(authorization: str | None) -> User:
     if not user:
         raise HTTPException(status_code=401, detail="Login required")
     return user
+
+
+def _clear_old_reports() -> None:
+    """Remove previous report docx files so only the current run's report remains."""
+    if OUTPUT_DIR.exists():
+        for f in OUTPUT_DIR.glob("*_report.docx"):
+            try:
+                f.unlink()
+            except OSError as e:
+                logger.warning(f"Could not delete stale report {f}: {e}")
 
 
 @router.post("/evaluate")
@@ -44,6 +58,9 @@ async def evaluate(
         "evaluation_date": (evaluation_date or "").strip(),
     }
 
+    # ---- Clean stale reports so the UI never picks an old file ----
+    _clear_old_reports()
+
     # ---- OBSERVABILITY: mark BEFORE the run ----
     mark = snapshot_mark()
 
@@ -54,9 +71,11 @@ async def evaluate(
         return JSONResponse(status_code=500, content={"response": "error", "message": str(e)})
 
     # ---- OBSERVABILITY: price spans for THIS request ----
-    obs = usage_since(mark, debug=True)   # debug=True prints span attrs once; set False later
-    logger.info(f"OBS: calls={obs['total']['calls']} usd={obs['total']['usd']:.6f} "
-                f"agents={obs['agents']} tools={obs['tools']}")
+    obs = usage_since(mark, debug=False)   # set debug=True temporarily to dump span attrs
+    logger.info(
+        f"OBS: calls={obs['total']['calls']} usd={obs['total']['usd']:.6f} "
+        f"agents={obs['agents']} rag={obs['rag']} tools={obs['tools']}"
+    )
 
     if not response:
         return JSONResponse(

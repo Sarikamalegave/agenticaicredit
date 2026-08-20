@@ -1,19 +1,33 @@
 # agents/ptk_builder.py
 """
 Builds PTK entries (LLM + RAG) and Assessment entries for each weakness.
-Concurrent, error-isolated: one bad weakness never crashes the batch.
+Concurrent, error-isolated. RAG embedding nests under the parent trace
+via OTel context propagation into worker threads.
 """
 
 import asyncio
+import contextvars
+import functools
 import logging
 
 from rag.retrieve import retrieve_context
 from agents.runners import run_ptk, run_assessment
 from models.schemas import PTKResult, AssessmentResult
+
 logger = logging.getLogger(__name__)
 
 # Throttle concurrency to respect LLM API rate limits
 MAX_CONCURRENT = 5
+
+
+async def _run_in_thread_with_context(func, /, *args, **kwargs):
+    """
+    Run a blocking function in a thread WHILE preserving the current
+    OTel/contextvars context, so spans created inside nest correctly.
+    """
+    ctx = contextvars.copy_context()
+    call = functools.partial(ctx.run, func, *args, **kwargs)
+    return await asyncio.to_thread(call)
 
 
 # ---------------------------------------------------------
@@ -27,8 +41,9 @@ async def _build_single_ptk(w: dict, ptk_agent, shape_sop_query_fn) -> dict | No
         # 1. Shape the SOP query (async)
         refined_query = await shape_sop_query_fn(w)
 
-        # 2. Retrieve SOP context (sync/blocking -> offload to thread)
-        sop_context = await asyncio.to_thread(
+        # 2. Retrieve SOP context (blocking) — context-propagated so the
+        #    'rag_embedding' span nests under qa_workflow.
+        sop_context = await _run_in_thread_with_context(
             retrieve_context, refined_query, parameter, subparameter
         )
         if not sop_context:
